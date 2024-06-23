@@ -1,0 +1,78 @@
+# This GCP YAML workflow automates the process of managing and triggering Bigquery Scheduled Queries. 
+# It initializes by assigning a list of scheduled queries and the GCP project ID.
+# The main workflow then calls the `manageScheduledQueries` sub-workflow, which lists all transfer configurations for the specified project.
+# It iterates through the provided list of scheduled queries, checking if each query exists in the transfer configurations.
+# If a match is found, it triggers the execution of the scheduled query using the `scheduledQueryExecutor` sub-workflow.
+main:
+    steps:
+        - initialize:
+            assign:
+              # setting variables
+                - scheduledqueries:
+                    - scheduled_query1
+                    - scheduled_query1
+                - gcp_project: ${sys.get_env("gcp_project")}
+        # Call the manageScheduledQueries sub-workflow
+        - callManageScheduledQueries:
+            call: manageScheduledQueries
+            args:
+                scheduledqueries: '${scheduledqueries}'
+                gcp_project: '${gcp_project}'
+# Sub-workflow to execute a scheduled query
+scheduledQueryExecutor:
+  params:
+    - resource_name
+  steps:
+    - run:
+        call: >-
+          googleapis.bigquerydatatransfer.v1.projects.locations.transferConfigs.startManualRuns
+        args:
+          parent: '${resource_name}'
+          body:
+            requestedRunTime: '${time.format(sys.now())}'
+# Sub-workflow to manage the list of scheduled queries
+manageScheduledQueries:
+    params:
+        - scheduledqueries
+        - gcp_project
+    steps:
+        - initializeIndex:
+            assign:
+              - i: 0
+        - listTransferConfigs:
+            call: >-
+              googleapis.bigquerydatatransfer.v1.projects.locations.transferConfigs.list
+            args:
+              parent: ${"projects/"+gcp_project+"/locations/us"}
+            result: transfer_configs
+        - check_condition:
+            switch:
+              - condition: '${len(transfer_configs.transferConfigs) > i}'
+                next: loopList
+            next: end
+        - loopList:
+            for:
+              value: v
+              in: '${scheduledqueries}'
+              steps:
+                - triggerQueries:
+                    switch:
+                      - condition: '${transfer_configs.transferConfigs[i].displayName == v}'
+                        steps:
+                            # Call the scheduledQueryExecutor sub-workflow
+                            - callScheduledQueryExecutor:
+                                call: scheduledQueryExecutor
+                                args:
+                                    resource_name: '${transfer_configs.transferConfigs[i].name}'
+                                result: run_result
+                            - showlog:
+                                call: sys.log
+                                args:
+                                  severity: INFO
+                                  text: ${"scheduled query " + transfer_configs.transferConfigs[i].displayName + " was triggered"}
+        - incrementIndex:
+            assign:
+              - i: '${i+1}'
+        - siguiente:
+            next: check_condition
+
